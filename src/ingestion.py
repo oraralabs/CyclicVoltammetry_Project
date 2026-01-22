@@ -1,9 +1,8 @@
 import pandas as pd
 import numpy as np
 
-# [Keep parse_cv_file exactly as it is - no changes needed there]
 def parse_cv_file(filepath):
-    # ... (Same code as before) ...
+    # Robust parsing logic
     encodings = ['utf-16', 'utf-8', 'latin1']
     df = None
     for enc in encodings:
@@ -21,10 +20,12 @@ def parse_cv_file(filepath):
         except UnicodeError:
             continue
     if df is None: raise ValueError("Could not read file.")
+    
     valid_cols = [c for c in df.columns if "Unnamed" not in str(c)]
     df = df[valid_cols]
     v_col = df.columns[-2]
     i_col = df.columns[-1]
+    
     return pd.DataFrame({
         'E_V': pd.to_numeric(df[v_col], errors='coerce'),
         'I_uA': pd.to_numeric(df[i_col], errors='coerce')
@@ -32,31 +33,31 @@ def parse_cv_file(filepath):
 
 def fit_anchor_baseline(x, y):
     """
-    IMPROVED: Polynomial Anchor (Degree 2).
-    Fits a gentle curve using the first 10% and last 10% of data points.
-    This handles the capacitive curvature better than a straight line.
+    LINEAR ANCHOR (1% - 99%).
+    The most stable method. Connects the start and end of the scan.
     """
     x = np.array(x)
     y = np.array(y)
     
-    # Select anchor regions (Start and End)
-    n_points = len(x)
-    n_anchor = int(n_points * 0.05) # Use 5% edge points
+    min_v, max_v = np.min(x), np.max(x)
+    span = max_v - min_v
     
-    # Combine start and end data for fitting
-    x_anchors = np.concatenate([x[:n_anchor], x[-n_anchor:]])
-    y_anchors = np.concatenate([y[:n_anchor], y[-n_anchor:]])
+    # 1% and 99% (The logic that worked best)
+    anchor_1_v = min_v + (span * 0.01)
+    anchor_2_v = min_v + (span * 0.99)
     
-    # Fit a 2nd degree polynomial (Parabola) to these anchors
-    coeffs = np.polyfit(x_anchors, y_anchors, deg=2)
-    baseline_poly = np.poly1d(coeffs)
+    # Sort for interpolation
+    sort_idx = np.argsort(x)
+    anchor_1_i = np.interp(anchor_1_v, x[sort_idx], y[sort_idx])
+    anchor_2_i = np.interp(anchor_2_v, x[sort_idx], y[sort_idx])
     
-    return baseline_poly(x)
+    # Linear Equation (y = mx + c)
+    slope = (anchor_2_i - anchor_1_i) / (anchor_2_v - anchor_1_v)
+    intercept = anchor_1_i - (slope * anchor_1_v)
+    
+    return (slope * x) + intercept
 
 def process_file(filepath):
-    """
-    INDEPENDENT BASELINES (Top and Bottom processed separately).
-    """
     df_raw = parse_cv_file(filepath)
     
     # 1. Split
@@ -66,7 +67,7 @@ def process_file(filepath):
     scan_a = df_raw.iloc[:turn_idx].sort_values('E_V')
     scan_b = df_raw.iloc[turn_idx:].sort_values('E_V')
     
-    # 2. Identify Top/Bottom
+    # 2. Top vs Bottom
     if scan_a['I_uA'].mean() > scan_b['I_uA'].mean():
         ox_scan, red_scan = scan_a, scan_b
     else:
