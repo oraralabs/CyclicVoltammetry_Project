@@ -32,26 +32,19 @@ def parse_cv_file(filepath):
     }).dropna()
 
 def fit_anchor_baseline(x, y):
-    """
-    LINEAR ANCHOR (1% - 99%).
-    The most stable method. Connects the start and end of the scan.
-    """
+    """LINEAR ANCHOR (1% - 99%). The most stable method."""
     x = np.array(x)
     y = np.array(y)
-    
     min_v, max_v = np.min(x), np.max(x)
     span = max_v - min_v
     
-    # 1% and 99% (The logic that worked best)
     anchor_1_v = min_v + (span * 0.01)
     anchor_2_v = min_v + (span * 0.99)
     
-    # Sort for interpolation
     sort_idx = np.argsort(x)
     anchor_1_i = np.interp(anchor_1_v, x[sort_idx], y[sort_idx])
     anchor_2_i = np.interp(anchor_2_v, x[sort_idx], y[sort_idx])
     
-    # Linear Equation (y = mx + c)
     slope = (anchor_2_i - anchor_1_i) / (anchor_2_v - anchor_1_v)
     intercept = anchor_1_i - (slope * anchor_1_v)
     
@@ -59,27 +52,22 @@ def fit_anchor_baseline(x, y):
 
 def process_file(filepath):
     df_raw = parse_cv_file(filepath)
-    
-    # 1. Split
     start_v = df_raw['E_V'].iloc[0]
     turn_idx = (df_raw['E_V'] - start_v).abs().idxmax()
     
     scan_a = df_raw.iloc[:turn_idx].sort_values('E_V')
     scan_b = df_raw.iloc[turn_idx:].sort_values('E_V')
     
-    # 2. Top vs Bottom
     if scan_a['I_uA'].mean() > scan_b['I_uA'].mean():
         ox_scan, red_scan = scan_a, scan_b
     else:
         ox_scan, red_scan = scan_b, scan_a
         
-    # 3. Process Oxidation
     x_ox = ox_scan['E_V'].values
     y_ox_raw = ox_scan['I_uA'].values
     base_ox = fit_anchor_baseline(x_ox, y_ox_raw)
     sig_ox = y_ox_raw - base_ox
     
-    # 4. Process Reduction
     x_red = red_scan['E_V'].values
     y_red_raw = red_scan['I_uA'].values
     base_red = fit_anchor_baseline(x_red, y_red_raw)
