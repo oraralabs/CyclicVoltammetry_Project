@@ -1,72 +1,46 @@
 import numpy as np
-from lmfit.models import GaussianModel, LinearModel
-from scipy.signal import find_peaks
+from sklearn.linear_model import Lasso
 
-class PeakResolver:
-    def fit_peaks(self, x, y, ai_prominence):
-        """
-        Iterative Deconvolution:
-        1. Finds obvious peaks using AI threshold.
-        2. Fits.
-        3. Checks residuals (error). If error is high, looks for peaks in the residuals (shoulders).
-        4. Refits with added peaks.
-        """
-        # 1. First Pass: Obvious Peaks
-        # We use a lower width to catch sharper features
-        peaks_idx, _ = find_peaks(y, prominence=ai_prominence, width=5)
-        
-        # If nothing found, try a very loose search just to get started
-        if len(peaks_idx) == 0:
-            peaks_idx, _ = find_peaks(y, prominence=ai_prominence*0.5)
-            
-        if len(peaks_idx) == 0: return [], None
+class SparseDeconvolution:
+    def __init__(self, basis_width=0.10):
+        self.basis_width = basis_width
 
-        # 2. Build Initial Model
-        model = LinearModel(prefix='base_')
-        params = model.make_params(slope=0, intercept=0)
-        
-        for i, idx in enumerate(peaks_idx):
-            self._add_gaussian(model, params, x[idx], y[idx], i)
-            
-        # 3. Initial Fit
-        result = model.fit(y, params, x=x)
-        
-        # 4. RESIDUAL CHECK (The "Smart" Step)
-        # Calculate where the model failed
-        residuals = y - result.best_fit
-        
-        # Look for peaks in the residuals (Hidden Shoulders)
-        # We look for lumps that are at least 20% of the main signal height
-        res_peaks, _ = find_peaks(residuals, height=np.max(y)*0.1, width=5)
-        
-        if len(res_peaks) > 0:
-            print(f"    ... Found {len(res_peaks)} hidden shoulders. Refitting.")
-            
-            # Add these new peaks to the existing model
-            current_peak_count = len(peaks_idx)
-            for i, idx in enumerate(res_peaks):
-                # Add new gaussian
-                pid = current_peak_count + i
-                self._add_gaussian(model, params, x[idx], residuals[idx], pid)
-            
-            # Refit with all peaks together
-            result = model.fit(y, params, x=x)
+    def construct_basis_matrix(self, voltage_grid):
+        n_points = len(voltage_grid)
+        centers = voltage_grid[::5] 
+        A = np.zeros((n_points, len(centers)))
+        sigma = self.basis_width / 2.355
+        for j, mu in enumerate(centers):
+            A[:, j] = np.exp(-0.5 * ((voltage_grid - mu) / sigma)**2)
+        return A, centers
 
-        # 5. Extract Results
-        final_peaks = []
-        for name in result.params:
-            if 'center' in name:
-                prefix = name.split('center')[0]
-                final_peaks.append({
-                    'loc': result.params[f'{prefix}center'].value,
-                    'height': result.params[f'{prefix}height'].value,
-                    'width': result.params[f'{prefix}sigma'].value * 2.355
-                })
-                
-        return final_peaks, result
+    def solve(self, x, y, alpha=0.01):
+        A, centers = self.construct_basis_matrix(x)
+        solver = Lasso(alpha=alpha, positive=True, fit_intercept=False, max_iter=5000)
+        solver.fit(A, y)
+        return solver.coef_, solver.predict(A), centers
 
-    def _add_gaussian(self, model, params, center, height, idx):
-        prefix = f'g{idx}_'
-        peak = GaussianModel(prefix=prefix)
-        params.update(peak.make_params(center=center, amplitude=height*0.1, sigma=0.05))
-        model += peak
+def consolidate_peaks(distribution, centers, voltage_grid):
+    if np.max(distribution) == 0: return []
+    v_min, v_max = np.min(voltage_grid), np.max(voltage_grid)
+    margin = (v_max - v_min) * 0.05
+    
+    sig_idx = np.where(distribution > np.max(distribution) * 0.1)[0]
+    final_peaks = []
+    
+    if len(sig_idx) > 0:
+        clusters, current_cluster = [], [sig_idx[0]]
+        for i in range(1, len(sig_idx)):
+            if sig_idx[i] <= sig_idx[i-1] + 2:
+                current_cluster.append(sig_idx[i])
+            else:
+                clusters.append(current_cluster)
+                current_cluster = [sig_idx[i]]
+        clusters.append(current_cluster)
+
+        for cluster in clusters:
+            best_idx = cluster[np.argmax(distribution[cluster])]
+            peak_v = centers[best_idx]
+            if (peak_v > v_min + margin) and (peak_v < v_max - margin):
+                final_peaks.append({'v': peak_v, 'mag': distribution[best_idx]})
+    return final_peaks

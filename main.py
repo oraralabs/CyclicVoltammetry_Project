@@ -1,108 +1,86 @@
 import matplotlib.pyplot as plt
-from scipy.signal import find_peaks
+import numpy as np
 import glob
 import os
-import numpy as np
-
 from src.ingestion import process_file
 from src.ai_brain import PeakTuner
+from src.deconvolution import SparseDeconvolution, consolidate_peaks
 
 def main():
-    try:
-        tuner = PeakTuner()
-    except Exception as e:
-        print(e)
-        return
-
+    tuner = PeakTuner()
+    solver = SparseDeconvolution(basis_width=0.10)
     data_files = glob.glob("data/*.csv")
-    print(f"Found {len(data_files)} files.")
 
     for fp in data_files:
         filename = os.path.basename(fp)
-        print(f"\nProcessing {filename}...")
-        
+        print(f"\n--- Analyzing Full Cycle: {filename} ---")
         try:
             data = process_file(fp)
-        except Exception as e:
-            print(f"  Error: {e}")
-            continue
+        except: continue
 
-        # Extract all necessary signals
-        x_ox = data['x_ox']
-        sig_ox = data['sig_ox']
-        x_red = data['x_red']
-        sig_red = data['sig_red']
+        ox_x, ox_sig = data['ox_x'], data['ox_sig']
+        red_x, red_sig = data['red_x'], data['red_sig']
 
-        # --- AI Prediction for BOTH scans ---
-        # The AI was trained on positive peaks, so we use abs() for the reduction signal
-        prom_ox = tuner.predict_prominence(sig_ox)
-        prom_red = tuner.predict_prominence(np.abs(sig_red))
-        
-        print(f"  🤖 AI Prominence -> Ox: {prom_ox:.2f} | Red: {prom_red:.2f}")
+        # AI Prediction & Solver for Oxidation
+        prom_ox = tuner.predict_prominence(ox_sig)
+        dist_ox, _, centers_ox = solver.solve(ox_x, ox_sig, alpha=prom_ox * 0.1)
+        peaks_ox = consolidate_peaks(dist_ox, centers_ox, ox_x)
 
-        # --- Peak Detection for BOTH scans ---
-        # Find peaks on the positive oxidation signal
-        peaks_ox, _ = find_peaks(sig_ox, prominence=prom_ox, width=10)
-        
-        # Find troughs (negative peaks) on the reduction signal by inverting it
-        peaks_red, _ = find_peaks(-sig_red, prominence=prom_red, width=10)
-        
-        print(f"  ✅ Found {len(peaks_ox)} Ox peaks, {len(peaks_red)} Red peaks.")
-        
-        # --- VISUALIZATION (Restoring the 3-Panel Concatenated View) ---
-        fig = plt.figure(figsize=(15, 10))
-        gs = fig.add_gridspec(2, 2)
-        
-        # Panel 1: Baseline Fitting
+        # AI Prediction & Solver for Reduction (Inverted for Lasso)
+        prom_red = tuner.predict_prominence(np.abs(red_sig))
+        dist_red, _, centers_red = solver.solve(red_x, -red_sig, alpha=prom_red * 0.1)
+        peaks_red = consolidate_peaks(dist_red, centers_red, red_x)
+
+        # --- PLOT 1: 3-PANEL PIPELINE (OX + RED) ---
+        fig = plt.figure(figsize=(15, 12))
+        gs = fig.add_gridspec(3, 1)
+
         ax1 = fig.add_subplot(gs[0, 0])
-        ax1.plot(x_ox, data['ox_scan']['I_uA'], color='blue', alpha=0.3, label='Raw Ox')
-        ax1.plot(x_ox, data['base_ox'], color='blue', linestyle='--', label='Baseline Ox')
-        ax1.plot(x_red, data['red_scan']['I_uA'], color='green', alpha=0.3, label='Raw Red')
-        ax1.plot(x_red, data['base_red'], color='green', linestyle='--', label='Baseline Red')
-        ax1.set_title("1. Baseline Fitting")
-        ax1.set_xlabel("Voltage (V)")
-        ax1.set_ylabel("Current (uA)")
+        ax1.plot(ox_x, data['ox_y_raw'], 'b', alpha=0.3, label='Raw Ox')
+        ax1.plot(ox_x, data['ox_base'], 'b--', label='Base Ox')
+        ax1.plot(red_x, data['red_y_raw'], 'g', alpha=0.3, label='Raw Red')
+        ax1.plot(red_x, data['red_base'], 'g--', label='Base Red')
+        ax1.set_title("1. Independent Baseline Fitting")
         ax1.legend()
-        ax1.grid(True, alpha=0.3)
+
+        ax2 = fig.add_subplot(gs[1, 0])
+        ax2.plot(ox_x, ox_sig, 'b', label='Oxidation')
+        ax2.plot(red_x, red_sig, 'g', label='Reduction')
+        ax2.axhline(0, color='k', lw=0.5)
+        ax2.set_title("2. Extracted Signals (Overlaid)")
+
+        ax3 = fig.add_subplot(gs[2, 0])
+        idx_ox = np.arange(len(ox_sig))
+        idx_red = np.arange(len(ox_sig), len(ox_sig) + len(red_sig))
+        ax3.plot(idx_ox, ox_sig, 'b', label='Forward Scan')
+        ax3.plot(idx_red, red_sig, 'g', label='Reverse Scan')
         
-        # Panel 2: Extracted Signals (Overlaid)
-        ax2 = fig.add_subplot(gs[0, 1])
-        ax2.plot(x_ox, sig_ox, color='blue', label='Oxidation')
-        ax2.fill_between(x_ox, sig_ox, 0, color='blue', alpha=0.1)
-        ax2.plot(x_red, sig_red, color='green', label='Reduction')
-        ax2.fill_between(x_red, sig_red, 0, color='green', alpha=0.1)
-        ax2.axhline(0, color='black', linewidth=0.5)
-        ax2.set_title("2. Extracted Signals")
-        ax2.set_xlabel("Voltage (V)")
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
+        # Mark Ox Peaks
+        for p in peaks_ox:
+            p_idx = np.argmin(np.abs(ox_x - p['v']))
+            ax3.plot(idx_ox[p_idx], ox_sig[p_idx], 'rx', ms=12, mew=2)
+            ax3.text(idx_ox[p_idx], ox_sig[p_idx]+1, f"{p['v']:.2f}V", color='red', ha='center')
         
-        # Panel 3: Concatenated Full Cycle
-        ax3 = fig.add_subplot(gs[1, :]) # Spans both columns
-        
-        # Create a continuous index for plotting
-        idx_ox = np.arange(len(x_ox))
-        idx_red = np.arange(len(x_ox), len(x_ox) + len(x_red))
-        
-        ax3.plot(idx_ox, sig_ox, color='blue', label='Forward Scan')
-        ax3.fill_between(idx_ox, sig_ox, 0, color='blue', alpha=0.2)
-        
-        ax3.plot(idx_red, sig_red, color='green', label='Reverse Scan')
-        ax3.fill_between(idx_red, sig_red, 0, color='green', alpha=0.2)
-        
-        # Plot the detected peaks on the concatenated axis
-        ax3.plot(idx_ox[peaks_ox], sig_ox[peaks_ox], "rx", markersize=12, markeredgewidth=2)
-        ax3.plot(idx_red[peaks_red], sig_red[peaks_red], "rx", markersize=12, markeredgewidth=2)
-        
-        ax3.axvline(len(x_ox), color='red', linestyle='--', label='Switching Point')
-        ax3.set_title(f"3. Concatenated Full Cycle (Peaks: {len(peaks_ox)} Ox, {len(peaks_red)} Red)")
-        ax3.set_xlabel("Data Point Index (Time)")
-        ax3.set_ylabel("Corrected Current (uA)")
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
-        
-        plt.suptitle(f"Full Pipeline Analysis: {filename}", fontsize=16)
+        # Mark Red Peaks (sig_red is negative)
+        for p in peaks_red:
+            p_idx = np.argmin(np.abs(red_x - p['v']))
+            ax3.plot(idx_red[p_idx], red_sig[p_idx], 'rx', ms=12, mew=2)
+            ax3.text(idx_red[p_idx], red_sig[p_idx]-2, f"{p['v']:.2f}V", color='red', ha='center')
+
+        ax3.axvline(len(ox_sig), color='red', ls='--')
+        ax3.set_title(f"3. Concatenated Full Cycle (Total Peaks: {len(peaks_ox) + len(peaks_red)})")
         plt.tight_layout()
+
+        # --- PLOT 2: DECONVOLUTED SPECTRUM (OXIDATION) ---
+        fig_recon, ax_recon = plt.subplots(figsize=(10, 6))
+        sigma = 0.10 / 2.355
+        colors = plt.cm.viridis(np.linspace(0, 1, len(peaks_ox)))
+        for i, p in enumerate(peaks_ox):
+            curve = p['mag'] * np.exp(-0.5 * ((ox_x - p['v']) / sigma)**2)
+            ax_recon.fill_between(ox_x, curve, alpha=0.4, color=colors[i], label=f"Species @ {p['v']:.2f}V")
+            ax_recon.plot(ox_x, curve, color=colors[i], lw=1)
+        ax_recon.set_title(f"Quantified Species Spectrum: {filename}")
+        ax_recon.legend()
         plt.show()
 
 if __name__ == "__main__":
