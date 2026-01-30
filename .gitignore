@@ -1,4 +1,56 @@
+# Python
 __pycache__/
-*.pkl
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
 .DS_Store
-data/
+Thumbs.db
+
+# Project specific
+*.png
+*.jpg
+*.jpeg
+*.gif
+!outputs/images/*.png
+!outputs/images/*.jpg
+
+# Large files
+*.h5
+*.keras
+*.npz
+*.csv
+!VER_2.0/data/*.csv
+
+# Temporary files
+temp_*
+*.tmp
+*.log
+
+# Archives
+VER_1.0_ARCHIVE/
+
+# Other
+validation_result.png
+temp_simulated_data.csv
